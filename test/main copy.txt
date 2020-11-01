@@ -1,0 +1,219 @@
+
+
+
+
+#include <Arduino.h>
+
+//Aircraft Stabilizer
+#include "MPU6050_6Axis_MotionApps20.h"
+#include "I2Cdev.h"
+#include <Servo.h>
+#include <PinChangeInt.h>
+#include "PID.h"
+#include "STAB.h"
+#include "MODULO.h"
+
+
+// ================================================================
+// ===                      RECIEVER                            ===
+// ================================================================
+
+
+String msg;
+
+
+
+
+
+
+void setup() {
+
+  
+    
+    
+    
+
+    
+
+}
+// ================================================================
+void loop() {
+
+    while(Serial.available()>0){
+      msg = Serial.readStringUntil('\n');
+      if(msg != ""){//read serial data send by the other card
+        if (msg.startsWith("dst: ")){dst = msg.substring(5).toFloat();}
+        else if (msg.startsWith("cor: ")){cor = msg.substring(5).toFloat();}
+        else if (msg.startsWith("hom: ")){hom = msg.substring(5).toFloat();}
+        else if (msg.startsWith("dOz: ")){dOz = msg.substring(5).toFloat();Oz = ypr[0]*-180/M_PI;
+        Oz_goal = Oz-dOz;}//each time there's a new comand sended, save the current value of Oz
+        else if (msg.startsWith("dri: ")){dri = msg.substring(5).toFloat();}
+        else if (msg.startsWith("alt: ")){alt = msg.substring(5).toFloat();}
+        else if (msg.startsWith("dal: ")){dal = msg.substring(5).toFloat();}
+        else if (msg.startsWith("vit: ")){vit = msg.substring(5).toFloat();}
+        else if (msg.startsWith("wait: ")){cor =0; alt = 0;}}}//if no signal, go straight
+    msg="";
+    //Serial.print("dét: ");Serial.print(dst);Serial.print(" -alt: ");Serial.print(alt);Serial.print(" -cor: ");Serial.print(cor);Serial.print(" -hom: ");Serial.println(hom);
+    if (!dmpReady) return;
+    rc_read_values();
+
+    dt = millis()-t;
+    t = millis();
+
+    Ox = ypr[2]*-180/M_PI;Oy = ypr[1]*180/M_PI;Oz = ypr[0]*-180/M_PI;
+    OComandex = degres(rc_shared[1]);OComandey = degres(rc_shared[2]);OComandez = degres(rc_shared[4]);ThrotleComande = degres(rc_shared[3]);
+
+    float Ogoalx = offsetx/40; float Ogoaly = offsety/40; float Ogoalz = offsetz/40; 
+
+    //filter_radiox.update(degres(rc_shared[1]),t1);filter_radioy.update(degres(rc_shared[2]),t1);filter_radioz.update(degres(rc_shared[4]),t1);
+
+    if(environ(rc_shared[5],2000)){if(mode < 2){mode = 2;}}// retour maison 
+    else if(environ(rc_shared[5],1000)){mode = 0;}//rc
+    else{mode = 1;}//defaut : RC stab
+
+    if(two_switch){
+      if(environ(rc_shared[6],2000)){mode2=0;}// mode plane
+      else if (environ(rc_shared[6],1500)){mode2=1;}//mode vtol
+      else{mode2=2;}//mode vtail
+    }
+
+    if(mode2==2){Vtail = true;Vtol = false;}
+    else if(mode2==1){Vtail = false;Vtol = true;}
+    else{Vtail = false;Vtol = false;}
+    //Serial.println(mode);
+    if(test_autopilot){mode = 2;}
+
+    if(mode == 0){radio_control =1;}
+    else if(mode == 1){
+      radio_control =0.5;
+      Ogoalz -= 0.5*filter_radioz.US*float(dt)/1000;
+      if(flight_mode == "Vtol"){radio_control = 0.1;}
+    }
+    else{
+      radio_control =0;
+      Ogoalz -= Oz_goal;}
+      
+    plane_pid.update(t,Ox,Oy,Oz,0,0,0,OComandex,OComandey,OComandez,ThrotleComande,Ogoalx,Ogoaly,Ogoalz,radio_control);
+
+
+    //si retour maison: retour maison actif si on est trop loin
+    //passage au mode 3 (trim) si buté en haut a droite joystick droit
+    if (mode>=2){
+      if(environ(degres(rc_shared[1]),-90,25) && environ(degres(rc_shared[2]),-90,25) ){
+        if(timer_mode_3==0){timer_mode_3 = millis(); }
+        else if(millis()-timer_mode_3>500){ mode = 3;timer_mode_3 = 0;shake(3);}}
+      else if(environ(degres(rc_shared[1]),-90,25) && environ(degres(rc_shared[2]),90,25) ){
+        if(timer_mode_4==0){timer_mode_4 = millis(); }
+        else if(millis()-timer_mode_4>500){ mode = 4;timer_mode_4 = 0;shake(4);}}
+      else if(environ(degres(rc_shared[1]),90,25) && environ(degres(rc_shared[2]),90,25) ){
+        if(timer_mode_5==0){timer_mode_5 = millis(); }
+        else if(millis()-timer_mode_5>500){ mode = 5;timer_mode_5 = 0;shake(5);}}
+      else if(environ(degres(rc_shared[1]),90,25) && environ(degres(rc_shared[2]),-90,25) ){
+        if(timer_mode_2==0){timer_mode_2 = millis(); }
+        else if(millis()-timer_mode_2>500){ mode = 2;timer_mode_2 = 0;shake(2);}}
+      else{
+        if (mode == 3){
+          offsetx += (degres(rc_shared[1])/45);offsety += (degres(rc_shared[2])/45);offsetz += (degres(rc_shared[4])/45);
+          offsetx = max(min(offsetx,500),-500);offsety = max(min(offsety,500),-500);offsetz = max(min(offsetz,500),-500);
+          }
+        else if(mode==4){
+          offsetx = 0;offsety = 0;offsetz = 0;offsetthrottle = 0;
+        }
+        else{
+          timer_mode_3=0;timer_mode_4=0;timer_mode_5=0;timer_mode_2=0;}
+      }
+    }
+    //if(t1/200 != previous_t){previous_t = t1/200;Serial.print("OZ: ");Serial.println(Oz);}//send the Oz evry 0.3s
+    //if(prev_mode != mode){Serial.println("mod: ");Serial.println(mode);prev_mode = mode;}//send the mode evry time it changes
+    
+    if (flight_mode == "Vtail"){  
+      /*
+      rol1----|----rol2
+              |
+              |
+           py1|py2
+      */
+      myServos[0].write(plane_pid.OX+90); 
+      myServos[0].write((plane_pid.OZ-plane_pid.OY)/2+90); //py1
+      myServos[0].write((plane_pid.OY+plane_pid.OZ)/2+90);   //py2
+      myMotors[0].write(plane_pid.ThrotleServo+90);
+      }
+    else if(flight_mode == "Vtol"){//(-33__33)
+      /*
+       M1---|---M2
+            |
+            |
+            o
+            M3
+      */
+      myMotors[0].write(plane_pid.M1+90); 
+      myMotors[0].write(plane_pid.M2+90); 
+      myMotors[0].write(plane_pid.M3+90);
+      myServos[0].write(plane_pid.YAW+90);
+      if(test_PID){
+        /*
+        //Serial.print(" Ox:");Serial.print(Ox*10);//Serial.print(" Oy:");Serial.print(Oy*1000);Serial.print(" Oz:");Serial.println(Oz*1000);Serial.print(" S:");Serial.print(OServox.US*10);
+        //Serial.print(" P:");Serial.print(plane_pid.PIDX.P*10);Serial.print(" I:");Serial.print(plane_pid.PIDX.I*10);Serial.print(" D:");Serial.println(plane_pid.PIDX.D*10);
+        //Serial.print(" 1:");Serial.print(plane_pid.OX*10);
+        //Serial.print(" 2:");Serial.print((plane_pid.OZ-plane_pid.OY)/2*10);
+        //Serial.print(" 3:");Serial.print(plane_pid.ThrotleServo*10);
+        //Serial.print(" 4:");Serial.println((plane_pid.OY+plane_pid.OZ)/2*10);
+        //Serial.print(" M1:");Serial.print(plane_pid.M1*100);
+        //Serial.print(" M2:");Serial.print(plane_pid.M2*100);
+        //Serial.print(" M3:");Serial.print(plane_pid.M3*100);
+        //Serial.print(" Yaw:");Serial.println(plane_pid.YAW*100);
+        //Serial.print(" ThrotleServo:");Serial.println(plane_pid.ThrotleServo);
+        //Serial.print( " Orad:");Serial.print(OComandex*100);Serial.print( " Oradfilt:");Serial.print(plane_pid.filter_Ox_rad.US*100);
+        //Serial.print( " O:");Serial.print(Ox*100);Serial.print( " Oxfilt:");Serial.print(plane_pid.filter_Ox.US*100);
+        //Serial.print( " OS:");Serial.println(plane_pid.OX*100);
+        */
+      }}
+      //Serial.println(ThrotleServo);
+
+    else if(flight_mode == "Canard"){
+      /*
+          -S0-
+            |
+       M0---|---M1
+            |
+      S1--S2-S3--S4
+      //7 out of 8 of the servos used
+      */
+      myServos[0].write(plane_pid.OY+90);
+      myServos[1].write(plane_pid.OY+90);//pitch control
+      myServos[2].write(-plane_pid.OY+90);
+
+      myServos[3].write(plane_pid.OX+90);
+      myServos[4].write(-plane_pid.OX+90);//roll control
+
+      myMotors[0].write(plane_pid.ThrotleServo+plane_pid.OZ+90);//throtle + yaw control
+      myMotors[1].write(plane_pid.ThrotleServo-plane_pid.OZ+90);
+    }
+    
+    else{//nomal flight mode
+      myServos[0].write(plane_pid.OX+90); 
+      myServos[0].write(plane_pid.OY+90); 
+      myServos[0].write(-plane_pid.OZ+90);
+      myMotors[0].write(plane_pid.ThrotleServo+90);} 
+
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+    fifoCount = mpu.getFIFOCount();
+    if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+        mpu.resetFIFO();
+        Serial.println(F("FIFO overflow!"));
+    } else if (mpuIntStatus & 0x02) {
+        while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();
+        mpu.getFIFOBytes(fifoBuffer, packetSize);
+        fifoCount -= packetSize;
+        #ifdef OUTPUT_READABLE_YAWPITCHROLL
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            mpu.dmpGetGravity(&gravity, &q);
+            mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+        #endif
+        blinkState = !blinkState;
+        digitalWrite(LED_PIN, blinkState);
+    } 
+}
+
+
